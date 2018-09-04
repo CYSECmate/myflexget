@@ -1,0 +1,297 @@
+
+variables: variables.yml
+
+templates:
+
+##### Series config
+#
+  series:
+    configure_series:
+      from:
+        entry_list: trakt-series
+      settings:
+        identified_by: ep
+        quality: hdtv+
+        propers: no
+        specials: no
+    content_size:
+      min: 200
+      max: 800
+      strict: no
+    content_filter:
+      require:
+        - '*.mkv'
+        - '*.avi'
+        - '*.mp4'
+
+
+##### Movies config
+#
+  movies:
+    quality: hdtv+
+    content_size:
+      min: 650
+      max: 3500
+      strict: no
+    content_filter:
+      require:
+        - '*.mkv'
+        - '*.avi'
+        - '*.mp4'
+
+##### Disable builtins for some tasks
+#
+  disable-seen-retry:
+    disable:
+      - seen
+      - seen_info_hash
+      - retry_failed
+
+
+##### Series metainfo mainly for move and update tasks
+#
+  series-metainfo:
+    trakt_lookup: yes
+    metainfo_series: yes
+    thetvdb_lookup: yes
+    require_field: tvdb_series_name
+
+
+##### Movies metainfo
+#
+  movies-metainfo:
+    trakt_lookup: yes
+    tmdb_lookup: yes
+
+
+##### Common rejections
+#
+  reject:
+    regexp:
+      reject:
+        - \b(s|d)ub(s|bed|lado|titulado)?\b
+        - \bhc\b
+        - \bdual\b
+        - \b3d\b
+        - \bita(lian)?\b
+        - \bspa(nish)?\b
+        - \bger(man)?\b
+        - \bcastellano\b
+        - \brus(sian)?\b
+        - \Головол\b
+        - \b XXX \b
+        - \b Anal \b
+        - \b Porn \b
+    content_filter:
+      reject:
+        - '*.rar'
+        - '*.zip'
+
+
+
+
+
+tasks:
+
+########## SERIES ##########
+
+##### Formats the output of the previous task and set the begin episode for the series
+#
+  fill-begin-trakt-series-list:
+    priority: 1
+    template:
+      - disable-seen-retry
+    next_trakt_episodes:
+      account: '{? trakt.account ?}'
+      list: '{? trakt.series_list ?}'
+      context: watched
+      position: next
+    accept_all: yes
+    set:
+      title: "{{trakt_series_name}} {{series_id}}"
+    set_series_begin: yes
+
+
+##### Fetch, format and output trakt series list to a custom entry list
+#
+  fill-trakt-series-list:
+    priority: 2
+    template:
+      - disable-seen-retry
+    list_clear:
+      what:
+        - entry_list: trakt-series
+    trakt_list:
+      account: '{? trakt.account ?}'
+      list: '{? trakt.series_list ?}'
+      type: shows
+    accept_all: yes
+    set:
+      title: "{{trakt_series_name}} ({{trakt_series_year}})"
+    list_add:
+      - entry_list: trakt-series
+
+
+##### Discover and download episodes from added series
+#
+  download-shows:
+    priority: 3
+    template:
+      - series
+      - reject
+      - series-metainfo
+    discover:
+      interval: 5 minutes
+      what:
+        - next_series_episodes:
+            from_start: yes
+      from:
+        - rarbg:
+            sorted_by: seeders
+        - piratebay:
+            sort_by: seeds
+            url: "https://baypirateproxy.org/"
+        #- limetorrents:
+        #    order_by: seeds
+    torrent_alive:
+        min_seeds: 3
+    set:
+       dir: "{{trakt_series_name}} ({{trakt_series_year}})"
+    putio:
+      token: '{? putio.token ?}'
+      root_dir_id: '{? putio.series_root_dir_id ?}'
+    notify:
+      entries:
+        message: |+
+            -------------------------    
+            TVShow - Download started
+            {% if series_name is defined -%}
+            *{{series_name}}* - {{series_id}}
+            {% else -%}
+            {{title}}
+            {%- endif -%}
+            Quality: {{quality|d('')}}
+            Size: {{content_size}}MB
+            {% if tvdb_ep_image is defined -%}
+            [Image]({{tvdb_ep_image|replace("_", "%5F")}})
+            {%- endif -%}
+        via:
+             - slack:
+                 web_hook_url: '{? slack.series_webhook ?}'
+
+
+########## MOVIES ##########
+#
+###### Pull movies from trakt.tv watchlist and add to the movie list
+#
+  fill-trakt-movies-list:
+    priority: 4
+    template:
+      - disable-seen-retry
+    list_clear:
+      what:
+        - movie_list: trakt-movies
+    trakt_list:
+      account: '{? trakt.account ?}'
+      list: '{? trakt.movies_list ?}'
+    accept_all: yes
+    trakt_lookup:
+       account: '{? trakt.account ?}'
+       username: '{? trakt.account ?}'
+    if:
+      - trakt_watched: reject
+    #seen: local
+    list_match:
+      from:
+        - movie_list: trakt-movies-downloaded
+      action: reject 
+      remove_on_match: no
+    list_add:
+      - movie_list: trakt-movies
+
+###### Download movies from the ishows-movies-added
+#
+  download-movies:
+      priority: 5 
+      template:
+          - movies
+          - reject
+          - movies-metainfo
+      discover:
+          interval: 5 minutes
+          what:
+              - movie_list: trakt-movies
+          from:
+              - rarbg:
+                  sorted_by: seeders
+              - piratebay:
+                  sort_by: seeds
+                  url: "https://baypirateproxy.org/"
+              #- limetorrents:
+              #   order_by: seeds
+      torrent_alive:
+          min_seeds: 2
+      list_match:
+          from:
+              - movie_list: trakt-movies
+      putio:
+          token: '{? putio.token ?}'
+          root_dir_id: '{? putio.movies_root_dir_id ?}'
+      list_add:
+          - movie_list: trakt-movies-downloaded
+      notify:
+          entries:
+              message: |+
+                  -------------------------
+                  Movies - Download started
+                  {% if movie_name is defined -%}
+                  *{{movie_name}}* ({{movie_year}})
+                  {% else -%}
+                  {{title}}
+                  {%- endif -%}
+                  Quality: {{quality|d('')}}
+                  Size: {{content_size}}MB
+                  {% if tmdb_posters is defined -%}
+                   [Image]({{tmdb_posters[0]|replace("_", "%5F")}})
+                  {%- endif -%}
+              via:
+                   - slack:
+                       web_hook_url: '{? slack.movies_webhook ?}'
+
+
+
+
+
+#schedules:
+
+########## SERIES ##########
+#
+#   - tasks: ['fill-begin-trakt-series-list', 'fill-trakt-series-list', 'download-shows']
+#     interval: 
+#        minutes: 20
+
+
+########## MOVIES ##########
+##
+#   - tasks: ['fill-trakt-movies-list', 'download-movies']
+#     interval:
+#        minutes: 10
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
